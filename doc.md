@@ -1,7 +1,7 @@
 # HTML5 Speedtest
 
 > by Federico Dossena  
-> Version 4.7
+> Version 4.7.2
 > [https://github.com/adolfintel/speedtest/](https://github.com/adolfintel/speedtest/)
 
 
@@ -40,6 +40,10 @@ To install the test on your server, upload the following files:
 Later we'll see how to use the test without PHP, and how to configure the telemetry and result sharing if you want to use that.
 
 __Important:__ keep all the files together; all paths are relative to the js file
+
+__Important:__ If you expect to serve more than ~500 tests per day, you will need to sign up to [ipinfo.io](https://ipinfo.io) and edit `getIP_ipInfo_apikey.php` to set your access token. IpInfo.io has kindly offered free access to their APIs for users of this project; if you're interested, contact me at [info@fdossena.com](mailto:info@fdossena.com) and provide a description of what you intend to do with the project, and you'll get the API key. This is only required if you intend to use ISP and distance detection.
+
+__Important:__ Make sure PHP is allowed to write to the directory where you're installing the speedtest because getIP.php needs to create a cache file to improve performance.
 
 ## Basic usage
 You can start using this speedtest on your site without any special knowledge.  
@@ -148,7 +152,7 @@ The response from the worker is a JSON string containing these entries:
 * __dlProgress__: the progress of the download test as a number between 0 and 1
 * __ulProgress__: the progress of the upload test as a number between 0 and 1
 * __pingProgress__: the progress of the ping+jitter test as a number between 0 and 1
-* __testId__: when telemetry is active, this is the ID of the test as an integer. This string is 'noID' until the test is finished (testState 4). This ID is used for results sharing
+* __testId__: when telemetry is active, this is the ID of the test in the database. This string is null until the test is finished (testState 4), or if telemetry encounters an error. This ID is used for results sharing
 
 ### Starting the test
 To start the test with the default settings, which is usually the best choice, send the start command to the worker:
@@ -221,11 +225,11 @@ w.postMessage('start '+JSON.stringify(params))
 * __enable_quirks__: enables browser-specific optimizations. These optimizations override some of the default settings. They do not override settings that are explicitly set.
     * Default: `true`
 * __garbagePhp_chunkSize__: size of chunks sent by garbage.php in megabytes
-    * Default: `20`
+    * Default: `100`
     * Recommended: `>=10`
-    * Maximum: `100`
+    * Maximum: `1024`
 * __xhr_dlMultistream__: how many streams should be opened for the download test
-    * Default: `10`
+    * Default: `6`
     * Recommended: `>=3`
     * Default override: 3 on Edge if enable_quirks is true
     * Default override: 5 on Chromium-based if enable_quirks is true
@@ -254,6 +258,7 @@ w.postMessage('start '+JSON.stringify(params))
     * Recommended: `>=1`
 * __ping_allowPerformanceApi__: toggles use of Performance API to improve accuracy of Ping/Jitter test on browsers that support it.
 	* Default: `true`
+	* Default override: `false` on Firefox because its performance API implementation is inaccurate
 * __useMebibits__: use mebibits/s instead of megabits/s for the speeds
 	* Default: `false`
 * __overheadCompensationFactor__: compensation for HTTP and network overhead. Default value assumes typical MTUs used over the Internet. You might want to change this if you're using this in your internal network with different MTUs, or if you're using IPv6 instead of IPv4.
@@ -381,6 +386,15 @@ This feature requires Telemetry to be enabled, and FreeType2 must be installed i
 
 __Important:__ This feature relies on PHP functions `imagefttext` and `imageftbbox` that are well known for being problematic. The most common problem is that they can't find the font files and therefore nothing is drawn. This problem is metioned [here](http://php.net/manual/en/function.imagefttext.php) and was experienced by a lot of users.
 
+#### Obfuscated Test IDs
+By default, the telemetry generates a progressive ID for each test. Even if no sensitive information is leaked, you might not want users to be able to guess other test IDs. To avoid this, you can turn on ID obfuscation, which turns IDs into a reversible hash, much like YouTube video IDs.
+
+To enable this feature, edit `telemetry_settings.php` and set `enable_id_obfuscation` to true.
+
+From now on, all test IDs will be obfuscated using a unique salt. The IDs in the database are still progressive, but users will only know their obfuscated versions and won't be able to easily guess other IDs.
+
+__Important:__ Make sure PHP is allowed to write to the `telemetry` folder. The salt will be stored in a file called `idObfuscation_salt.php`. This file is like a private key, don't lose it or you won't be able to deobfuscate IDs anymore!
+
 ### Seeing the results
 A basic front-end for visualizing and searching tests by ID is available in `telemetry/stats.php`.
 
@@ -441,6 +455,10 @@ This is a configuration issue. Make a file called web.config in wwwroot and adap
   </system.webServer> 
 </configuration>
 ```
+
+#### ID obfuscation doesn't work (incorrect output, blank results image)
+ID obfuscation only works on 64 bit PHP (requires PHP_INT_SIZE to be 8).  
+Note that older versions of PHP 5 on Windows use PHP_INT_SIZE of 4, even if they're 64 bit. If you're in this situation, update your PHP install.
 
 ## Known bugs and limitations
 ### General

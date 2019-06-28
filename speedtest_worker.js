@@ -1,5 +1,5 @@
 /*
-	HTML5 Speedtest v4.7
+	HTML5 Speedtest v4.7.2
 	by Federico Dossena
 	https://github.com/adolfintel/speedtest/
 	GNU LGPLv3 License
@@ -15,7 +15,7 @@ var clientIp = ""; // client's IP address as reported by getIP.php
 var dlProgress = 0; //progress of download test 0-1
 var ulProgress = 0; //progress of upload test 0-1
 var pingProgress = 0; //progress of ping+jitter test 0-1
-var testId = "noID"; //test ID (sent back by telemetry if used, the string 'noID' otherwise)
+var testId = null; //test ID (sent back by telemetry if used, null otherwise)
 
 var log = ""; //telemetry log
 function tlog(s) {
@@ -50,13 +50,13 @@ var settings = {
 	url_getIp: "getIP.php", // path to getIP.php relative to this js file, or a similar thing that outputs the client's ip
 	getIp_ispInfo: true, //if set to true, the server will include ISP info with the IP address
 	getIp_ispInfo_distance: "km", //km or mi=estimate distance from server in km/mi; set to false to disable distance estimation. getIp_ispInfo must be enabled in order for this to work
-	xhr_dlMultistream: 10, // number of download streams to use (can be different if enable_quirks is active)
+	xhr_dlMultistream: 6, // number of download streams to use (can be different if enable_quirks is active)
 	xhr_ulMultistream: 3, // number of upload streams to use (can be different if enable_quirks is active)
 	xhr_multistreamDelay: 300, //how much concurrent requests should be delayed
 	xhr_ignoreErrors: 1, // 0=fail on errors, 1=attempt to restart a stream if it fails, 2=ignore all errors
 	xhr_dlUseBlob: false, // if set to true, it reduces ram usage but uses the hard drive (useful with large garbagePhp_chunkSize and/or high xhr_dlMultistream)
 	xhr_ul_blob_megabytes: 20, //size in megabytes of the upload blobs sent in the upload test (forced to 4 on chrome mobile)
-	garbagePhp_chunkSize: 20, // size of chunks sent by garbage.php (can be different if enable_quirks is active)
+	garbagePhp_chunkSize: 100, // size of chunks sent by garbage.php (can be different if enable_quirks is active)
 	enable_quirks: true, // enable quirks for specific browsers. currently it overrides settings to optimize for specific browsers, unless they are already being overridden with the start command
 	ping_allowPerformanceApi: true, // if enabled, the ping test will attempt to calculate the ping more precisely using the Performance API. Currently works perfectly in Chrome, badly in Edge, and not at all in Firefox. If Performance API is not supported or the result is obviously wrong, a fallback is provided.
 	overheadCompensationFactor: 1.06, //can be changed to compensatie for transport overhead. (see doc.md for some other values)
@@ -129,6 +129,10 @@ this.addEventListener("message", function(e) {
 						// ff more precise with 1 upload stream
 						settings.xhr_ulMultistream = 1;
 					}
+					if (typeof s.xhr_ulMultistream === "undefined") {
+						// ff performance API sucks
+						settings.ping_allowPerformanceApi = false;
+					}
 				}
 				if (/Edge.(\d+\.\d+)/i.test(ua)) {
 					if (typeof s.xhr_dlMultistream === "undefined") {
@@ -145,6 +149,10 @@ this.addEventListener("message", function(e) {
 			}
 			if (/Edge.(\d+\.\d+)/i.test(ua)) {
 				//Edge 15 introduced a bug that causes onprogress events to not get fired, we have to use the "small chunks" workaround that reduces accuracy
+				settings.forceIE11Workaround = true;
+			}
+			if (/PlayStation 4.(\d+\.\d+)/i.test(ua)) {
+				//PS4 browser has the same bug as IE11/Edge
 				settings.forceIE11Workaround = true;
 			}
 			if (/Chrome.(\d+)/i.test(ua) && /Android|iPhone|iPad|iPod|Windows Phone/i.test(ua)) {
@@ -173,7 +181,7 @@ this.addEventListener("message", function(e) {
 				if (settings.telemetry_level > 0)
 					sendTelemetry(function(id) {
 						testStatus = 4;
-						if (id != -1) testId = id;
+						if (id != null) testId = id;
 					});
 				else testStatus = 4;
 				return;
@@ -460,23 +468,18 @@ function ulTest(done) {
 				}
 				if (ie11workaround) {
 					// IE11 workarond: xhr.upload does not work properly, therefore we send a bunch of small 256k requests and use the onload event as progress. This is not precise, especially on fast connections
-					xhr[i].onload = function() {
+					xhr[i].onload = xhr[i].onerror = function() {
 						tverb("ul stream progress event (ie11wa)");
 						totLoaded += reqsmall.size;
 						testStream(i, 0);
 					};
-					xhr[i].onerror = function() {
-						// error, abort
-						tverb("ul stream failed (ie11wa)");
-						if (settings.xhr_ignoreErrors === 0) failed = true; //abort
-						try {
-							xhr[i].abort();
-						} catch (e) {}
-						delete xhr[i];
-						if (settings.xhr_ignoreErrors === 1) testStream(i, 0); //restart stream
-					};
 					xhr[i].open("POST", settings.url_ul + url_sep(settings.url_ul) + "r=" + Math.random(), true); // random string to prevent caching
-					xhr[i].setRequestHeader("Content-Encoding", "identity"); // disable compression (some browsers may refuse it, but data is incompressible anyway)
+					try{
+						xhr[i].setRequestHeader("Content-Encoding", "identity"); // disable compression (some browsers may refuse it, but data is incompressible anyway)
+					}catch(e){}
+					try{
+						xhr[i].setRequestHeader("Content-Type", "application/octet-stream"); //force content-type to application/octet-stream in case the server misinterprets it
+					}catch(e){}
 					xhr[i].send(reqsmall);
 				} else {
 					// REGULAR version, no workaround
@@ -509,7 +512,12 @@ function ulTest(done) {
 					}.bind(this);
 					// send xhr
 					xhr[i].open("POST", settings.url_ul + url_sep(settings.url_ul) + "r=" + Math.random(), true); // random string to prevent caching
-					xhr[i].setRequestHeader("Content-Encoding", "identity"); // disable compression (some browsers may refuse it, but data is incompressible anyway)
+					try{
+						xhr[i].setRequestHeader("Content-Encoding", "identity"); // disable compression (some browsers may refuse it, but data is incompressible anyway)
+					}catch(e){}
+					try{
+						xhr[i].setRequestHeader("Content-Type", "application/octet-stream"); //force content-type to application/octet-stream in case the server misinterprets it
+					}catch(e){}
 					xhr[i].send(req);
 				}
 			}.bind(this),
@@ -591,15 +599,17 @@ function pingTest(done) {
 						//try to get accurate performance timing using performance api
 						var p = performance.getEntries();
 						p = p[p.length - 1];
-						var d = p.responseStart - p.requestStart; //best precision: chromium-based
-						if (d <= 0) d = p.duration; //edge: not so good precision because it also considers the overhead and there is no way to avoid it
+						var d = p.responseStart - p.requestStart;
+						if (d <= 0) d = p.duration;
 						if (d > 0 && d < instspd) instspd = d;
 					} catch (e) {
 						//if not possible, keep the estimate
-						//firefox can't access performance api from worker: worst precision
 						tverb("Performance API not supported, using estimate");
 					}
 				}
+				//noticed that some browsers randomly have 0ms ping
+				if(instspd<1) instspd=prevInstspd;
+				if(instspd<1) instspd=1;
 				var instjitter = Math.abs(instspd - prevInstspd);
 				if (i === 1) ping = instspd;
 				/* first ping, can't tell jitter yet*/ else {
@@ -662,20 +672,19 @@ function sendTelemetry(done) {
 			var parts = xhr.responseText.split(" ");
 			if (parts[0] == "id") {
 				try {
-					var id = Number(parts[1]);
-					if (!isNaN(id)) done(id);
-					else done(-1);
+					var id = parts[1];
+					done(id);
 				} catch (e) {
-					done(-1);
+					done(null);
 				}
-			} else done(-1);
+			} else done(null);
 		} catch (e) {
-			done(-1);
+			done(null);
 		}
 	};
 	xhr.onerror = function() {
 		console.log("TELEMETRY ERROR " + xhr.status);
-		done(-1);
+		done(null);
 	};
 	xhr.open("POST", settings.url_telemetry + url_sep(settings.url_telemetry) + "r=" + Math.random(), true);
 	var telemetryIspInfo = {
